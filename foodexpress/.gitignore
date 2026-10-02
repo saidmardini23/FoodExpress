@@ -1,11 +1,11 @@
-# Compiled class files
+# ==========================================
+# 1. Archivos compilados y temporales de Maven
+# ==========================================
 target/
 *.class
-
-# Log files
 *.log
 
-# Package Files
+# Archivos empaquetados finales
 *.jar
 *.war
 *.nar
@@ -14,11 +14,13 @@ target/
 *.tar.gz
 *.rar
 
-# Virtual machine logs
+# Logs de Máquina Virtual Java
 hs_err_pid*
 replay_pid*
 
-# IDE Specific - VS Code
+# ==========================================
+# 2. Configuración del IDE (VS Code & IntelliJ)
+# ==========================================
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
@@ -26,7 +28,6 @@ replay_pid*
 !.vscode/extensions.json
 *.code-workspace
 
-# IDE Specific - IntelliJ / Eclipse
 .idea/
 *.iws
 *.iml
@@ -35,5 +36,13 @@ replay_pid*
 .project
 .settings/
 
-# Maven wrapper executable binaries
-.mvn/wrapper/maven-wrapper.jar
+# ==========================================
+# 3. Archivos del Sistema Operativo
+# ==========================================
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# 4. Herramientas temporales / Scripts locales
+# ==========================================
+.github/modernize/

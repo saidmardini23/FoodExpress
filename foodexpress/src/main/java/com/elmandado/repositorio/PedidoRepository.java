@@ -1,8 +1,9 @@
-package com.example.foodexpress.repositorio;
+package com.elmandado.repositorio;
 
-import com.example.foodexpress.modelo.Pedido;
 import java.util.List;
 import java.util.Optional;
+
+import com.elmandado.modelo.Pedido;
 
 public interface PedidoRepository {
 
@@ -13,4 +14,6 @@ public interface PedidoRepository {
     Pedido guardar(Pedido pedido);
 
     void eliminar(Long id);
+
+    boolean existePorId(Long id);
 }

@@ -1,13 +1,13 @@
-package com.example.foodexpress;
+package com.elmandado;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class FoodexpressApplication {
+public class elmandadoApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(FoodexpressApplication.class, args);
+		SpringApplication.run(elmandadoApplication.class, args);
 	}
 
 }

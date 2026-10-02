@@ -2,9 +2,9 @@
 
 ## Descripción
 
-La capa de servicio contiene la lógica de negocio de la aplicación **FoodExpress**.
+La capa de servicio contiene la lógica de negocio de la aplicación **El Mandado**.
 
-Su función principal es actuar como intermediario entre el controlador y el repositorio. De esta manera, el controlador se encarga de recibir las peticiones HTTP, mientras que el servicio decide qué operación debe realizarse y aplica las reglas correspondientes.
+Actúa como intermediario entre el controlador y el repositorio: el controlador recibe las peticiones HTTP, y el servicio decide qué operación realizar, aplica las reglas de negocio y convierte las entidades en DTOs para devolverlas.
 
 La capa está compuesta por:
 
@@ -15,20 +15,85 @@ servicio
 └── PedidoServiceImpl
 ```
 
+Y se apoya en:
+
+```text
+dto
+│
+├── CrearPedidoDTO   (entrada)
+└── PedidoDTO        (salida)
+
+exepciones
+│
+├── RecursoNoEncontradoException
+├── ValidacionException
+└── GlobalExceptionHandler
+```
+
+---
+
+# DTOs
+
+Desde esta versión el servicio **ya no recibe ni devuelve la entidad `Pedido` directamente**. Usa DTOs para separar el modelo interno de lo que se expone por la API.
+
+## CrearPedidoDTO (entrada)
+
+Se usa al crear y al actualizar un pedido. Es un `record` con validaciones de Jakarta Validation:
+
+```java
+public record CrearPedidoDTO(
+        @NotBlank(message = "El cliente es obligatorio")
+        @Size(max = 25, message = "El cliente no puede superar los 25 caracteres")
+        String cliente,
+
+        @NotBlank(message = "El plato es obligatorio")
+        @Size(max = 50, message = "El nombre del plato no puede superar los 50 caracteres")
+        String plato,
+
+        @NotNull(message = "El precio es obligatorio")
+        @Positive(message = "El precio debe ser positivo")
+        Double precio) {
+}
+```
+
+| Campo | Reglas |
+|-------|--------|
+| `cliente` | Obligatorio, máximo 25 caracteres |
+| `plato` | Obligatorio, máximo 50 caracteres |
+| `precio` | Obligatorio, mayor a 0 |
+
+Estas anotaciones se activan cuando el controlador recibe el DTO con `@Valid`.
+
+## PedidoDTO (salida)
+
+Es la representación del pedido que se devuelve al cliente:
+
+```java
+public record PedidoDTO(
+        Long id,
+        String cliente,
+        String plato,
+        Double precio,
+        boolean entregado) {
+}
+```
+
 ---
 
 # PedidoService
 
-`PedidoService` es una interfaz que define las operaciones que puede realizar el sistema sobre los pedidos.
+`PedidoService` es la interfaz que define las operaciones disponibles sobre los pedidos.
 
 ```java
 public interface PedidoService {
 
-    List<Pedido> listarTodos();
+    List<PedidoDTO> listarTodos();
 
-    Pedido obtenerPorId(Long id);
+    PedidoDTO obtenerPorId(Long id);
 
-    Pedido crear(String cliente, String plato, double precio);
+    PedidoDTO crear(CrearPedidoDTO dto);
+
+    PedidoDTO actualizar(Long id, CrearPedidoDTO dto);
 
     void marcarEntregado(Long id);
 
@@ -36,28 +101,26 @@ public interface PedidoService {
 }
 ```
 
-La interfaz permite separar la definición de las operaciones de su implementación.
+### Cambios respecto a la versión anterior
+
+| Antes | Ahora |
+|-------|-------|
+| Devolvía `Pedido` | Devuelve `PedidoDTO` |
+| `crear(String, String, double)` | `crear(CrearPedidoDTO)` |
+| No existía actualización | Nuevo método `actualizar(Long, CrearPedidoDTO)` |
 
 ---
 
 # PedidoServiceImpl
 
-`PedidoServiceImpl` es la implementación de `PedidoService`.
-
-Utiliza la anotación:
-
-```java
-@Service
-```
-
-Esto permite que Spring registre la clase como un componente de la aplicación y pueda inyectarla donde sea necesaria.
+Implementación de `PedidoService`, registrada en Spring con `@Service`:
 
 ```java
 @Service
 public class PedidoServiceImpl implements PedidoService {
 ```
 
-El servicio recibe una instancia de `PedidoRepository` mediante inyección de dependencias por constructor:
+Recibe el `PedidoRepository` por inyección de dependencias en el constructor:
 
 ```java
 private final PedidoRepository repositorio;
@@ -67,16 +130,151 @@ public PedidoServiceImpl(PedidoRepository repositorio) {
 }
 ```
 
-La comunicación entre las capas queda de la siguiente manera:
+Comunicación entre capas:
 
 ```text
 PedidoController
        ↓
-PedidoService
+PedidoService      (trabaja con DTOs)
        ↓
-PedidoRepository
+PedidoRepository   (trabaja con la entidad Pedido)
        ↓
 PedidoRepositoryMemoria
+```
+
+---
+
+# Excepciones
+
+El servicio usa excepciones propias en lugar de las de Java, y un manejador global que las traduce a respuestas HTTP.
+
+*(Antes se usaban `NoSuchElementException` e `IllegalArgumentException`, y el controlador las convertía.)*
+
+## Excepciones propias
+
+Ambas extienden `RuntimeException` (no son checked, así que no hay que declararlas con `throws`) y solo reciben un mensaje:
+
+```java
+public class RecursoNoEncontradoException extends RuntimeException {
+    public RecursoNoEncontradoException(String mensaje) {
+        super(mensaje);
+    }
+}
+```
+
+```java
+public class ValidacionException extends RuntimeException {
+    public ValidacionException(String mensaje) {
+        super(mensaje);
+    }
+}
+```
+
+| Excepción | Cuándo se lanza | Respuesta HTTP |
+|-----------|-----------------|----------------|
+| `RecursoNoEncontradoException` | El pedido con ese ID no existe | `404 Not Found` |
+| `ValidacionException` | Se rompe una regla de negocio | `400 Bad Request` |
+
+## GlobalExceptionHandler
+
+Es una clase anotada con `@RestControllerAdvice` que intercepta las excepciones lanzadas desde cualquier controlador (o desde las capas que este llama) y las convierte en respuestas JSON. Gracias a esto el servicio solo lanza la excepción y **no decide el código HTTP**.
+
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+```
+
+| Excepción capturada | Código | Cuerpo de la respuesta |
+|---------------------|--------|------------------------|
+| `RecursoNoEncontradoException` | `404 Not Found` | `{ "error": "<mensaje>" }` |
+| `ValidacionException` | `400 Bad Request` | `{ "error": "<mensaje>" }` |
+| `MethodArgumentNotValidException` | `400 Bad Request` | `{ "<campo>": "<mensaje>", ... }` |
+| `Exception` (cualquier otra) | `500 Internal Server Error` | `{ "error": "...", "detalle": "<mensaje>" }` |
+
+### 1. Recurso no encontrado
+
+```java
+@ExceptionHandler(RecursoNoEncontradoException.class)
+public ResponseEntity<Map<String, String>> handleNoEncontrado(RecursoNoEncontradoException ex) {
+    return ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .body(Map.of("error", ex.getMessage()));
+}
+```
+
+Ejemplo de respuesta:
+
+```json
+{ "error": "No existe el pedido con ID: 99" }
+```
+
+### 2. Reglas de negocio
+
+```java
+@ExceptionHandler(ValidacionException.class)
+public ResponseEntity<Map<String, String>> handleValidacion(ValidacionException ex) {
+    return ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body(Map.of("error", ex.getMessage()));
+}
+```
+
+Ejemplo de respuesta:
+
+```json
+{ "error": "El pedido con ID 1 ya había sido marcado como entregado" }
+```
+
+### 3. Validaciones del DTO (`@Valid`)
+
+Cuando `CrearPedidoDTO` no cumple sus anotaciones, Spring lanza `MethodArgumentNotValidException` **antes de entrar al servicio**. El handler arma un mapa `campo → mensaje`:
+
+```java
+@ExceptionHandler(MethodArgumentNotValidException.class)
+public ResponseEntity<Map<String, String>> handleValidacionDTO(MethodArgumentNotValidException ex) {
+    Map<String, String> errores = new HashMap<>();
+    ex.getBindingResult().getFieldErrors()
+            .forEach(error -> errores.put(error.getField(), error.getDefaultMessage()));
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errores);
+}
+```
+
+Ejemplo de respuesta:
+
+```json
+{
+  "cliente": "El cliente es obligatorio",
+  "precio": "El precio debe ser positivo"
+}
+```
+
+Nota: el formato es distinto al de los otros errores (`{ "error": ... }`), porque aquí puede haber varios campos fallando a la vez.
+
+### 4. Errores no previstos
+
+```java
+@ExceptionHandler(Exception.class)
+public ResponseEntity<Map<String, String>> handleGlobalException(Exception ex) {
+    return ResponseEntity
+            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(Map.of(
+                    "error", "Ha ocurrido un error interno en el servidor",
+                    "detalle", ex.getMessage() != null ? ex.getMessage() : "Error no especificado"));
+}
+```
+
+Es la red de seguridad final: cualquier excepción que no tenga un handler más específico termina aquí y se responde con `500`. Spring elige siempre el handler más específico, por eso este solo se usa como último recurso.
+
+### Flujo de un error
+
+```text
+PedidoService lanza RecursoNoEncontradoException
+        ↓
+Spring la propaga hasta el controlador
+        ↓
+GlobalExceptionHandler.handleNoEncontrado()
+        ↓
+404 Not Found + { "error": "No existe el pedido con ID: 99" }
 ```
 
 ---
@@ -85,283 +283,235 @@ PedidoRepositoryMemoria
 
 ## 1. Listar todos los pedidos
 
-### Método
-
-```java
-List<Pedido> listarTodos()
-```
-
-### Función
-
-Obtiene todos los pedidos registrados.
-
-El servicio delega la búsqueda al repositorio:
-
 ```java
 @Override
-public List<Pedido> listarTodos() {
-    return repositorio.buscarTodos();
+public List<PedidoDTO> listarTodos() {
+    return repositorio.buscarTodos().stream()
+            .map(p -> new PedidoDTO(p.getId(), p.getCliente(), p.getPlato(), p.getPrecio(), p.isEntregado()))
+            .toList();
 }
 ```
 
-### Flujo
+Obtiene todos los pedidos del repositorio y convierte cada `Pedido` en un `PedidoDTO`.
 
 ```text
-Cliente
-   ↓
 GET /api/pedidos
    ↓
 PedidoController
    ↓
 PedidoService
    ↓
-PedidoRepository
+PedidoRepository.buscarTodos()
    ↓
-Lista de pedidos
+Mapeo Pedido → PedidoDTO
+   ↓
+Lista de PedidoDTO
 ```
 
 ---
 
-# 2. Obtener pedido por ID
-
-### Método
-
-```java
-Pedido obtenerPorId(Long id)
-```
-
-### Función
-
-Busca un pedido utilizando su identificador.
+## 2. Obtener pedido por ID
 
 ```java
 @Override
-public Pedido obtenerPorId(Long id) {
-    return repositorio.buscarPorId(id)
-            .orElseThrow(() ->
-                new NoSuchElementException(
-                    "No existe el pedido con ID: " + id
-                )
-            );
+public PedidoDTO obtenerPorId(Long id) {
+    Pedido p = repositorio.buscarPorId(id)
+            .orElseThrow(() -> new RecursoNoEncontradoException("No existe el pedido con ID: " + id));
+    return new PedidoDTO(p.getId(), p.getCliente(), p.getPlato(), p.getPrecio(), p.isEntregado());
 }
 ```
 
-El repositorio devuelve un `Optional<Pedido>`.
-
-Si el pedido existe, se devuelve.
-
-Si no existe, se lanza una `NoSuchElementException`.
-
-Esta excepción posteriormente es manejada por el controlador y convertida en una respuesta HTTP:
-
-```text
-404 Not Found
-```
+El repositorio devuelve un `Optional<Pedido>`. Si existe, se convierte a DTO; si no, se lanza `RecursoNoEncontradoException` (→ `404 Not Found`).
 
 ---
 
-# 3. Crear un pedido
-
-### Método
+## 3. Crear un pedido
 
 ```java
-Pedido crear(String cliente, String plato, double precio)
-```
+@Override
+public PedidoDTO crear(CrearPedidoDTO dto) {
+    if (dto == null) {
+        throw new ValidacionException("Los datos del pedido son obligatorios");
+    }
 
-### Función
-
-Crea un nuevo pedido después de comprobar que los datos básicos sean válidos.
-
-Primero se valida el cliente:
-
-```java
-if (cliente == null || cliente.isBlank()) {
-    throw new IllegalArgumentException(
-        "El nombre del cliente es obligatorio"
-    );
+    Pedido pedido = new Pedido(dto.cliente(), dto.plato(), dto.precio());
+    Pedido guardado = repositorio.guardar(pedido);
+    return new PedidoDTO(
+            guardado.getId(),
+            guardado.getCliente(),
+            guardado.getPlato(),
+            guardado.getPrecio(),
+            guardado.isEntregado());
 }
 ```
 
-Después se valida el plato:
+Pasos:
 
-```java
-if (plato == null || plato.isBlank()) {
-    throw new IllegalArgumentException(
-        "El plato es obligatorio"
-    );
-}
-```
+1. Comprueba que el DTO no sea `null` (si lo es, lanza `ValidacionException`).
+2. Crea la entidad `Pedido` con los datos del DTO. El ID lo asigna el repositorio al guardar.
+3. Guarda el pedido.
+4. Devuelve un `PedidoDTO` con los datos del pedido ya guardado (incluyendo el ID).
 
-Finalmente se valida el precio:
-
-```java
-if (precio <= 0) {
-    throw new IllegalArgumentException(
-        "El precio debe ser mayor a 0"
-    );
-}
-```
-
-Después de superar las validaciones se crea el objeto:
-
-```java
-Pedido nuevo = new Pedido(
-    null,
-    cliente.trim(),
-    plato.trim(),
-    precio
-);
-```
-
-El ID inicialmente es `null` porque será asignado por el repositorio.
-
-Finalmente se guarda:
-
-```java
-return repositorio.guardar(nuevo);
-```
-
-### Flujo
+> **Importante:** las validaciones de `cliente`, `plato` y `precio` **ya no están en el servicio**. Ahora viven en `CrearPedidoDTO` (Bean Validation) y se ejecutan antes de llegar aquí, cuando el controlador usa `@Valid`.
 
 ```text
 POST /api/pedidos
         ↓
-PedidoController
+PedidoController (@Valid CrearPedidoDTO)
         ↓
-PedidoService
+Validaciones del DTO
         ↓
-Validaciones
+PedidoService.crear()
         ↓
 Crear Pedido
         ↓
-PedidoRepository
+PedidoRepository.guardar()
         ↓
-Pedido creado
+Mapeo Pedido → PedidoDTO
 ```
 
 ---
 
-# 4. Marcar pedido como entregado
-
-### Método
+## 4. Actualizar un pedido (nuevo)
 
 ```java
-void marcarEntregado(Long id)
+@Override
+public PedidoDTO actualizar(Long id, CrearPedidoDTO dto) {
+    Pedido pedido = repositorio.buscarPorId(id)
+            .orElseThrow(() -> new RecursoNoEncontradoException("No existe el pedido con ID: " + id));
+
+    pedido.setCliente(dto.cliente());
+    pedido.setPlato(dto.plato());
+    pedido.setPrecio(dto.precio());
+
+    Pedido actualizado = repositorio.guardar(pedido);
+    return new PedidoDTO(
+            actualizado.getId(),
+            actualizado.getCliente(),
+            actualizado.getPlato(),
+            actualizado.getPrecio(),
+            actualizado.isEntregado());
+}
 ```
 
-### Función
+Pasos:
 
-Cambia el estado del pedido para indicar que ya fue entregado.
+1. Busca el pedido por ID (si no existe → `RecursoNoEncontradoException`).
+2. Reemplaza `cliente`, `plato` y `precio` con los valores del DTO.
+3. Guarda los cambios y devuelve el `PedidoDTO` actualizado.
 
-Primero se obtiene el pedido:
+El estado `entregado` **no se modifica** aquí; eso se hace con `marcarEntregado`.
+
+```text
+PUT /api/pedidos/{id}
+        ↓
+PedidoController (@Valid CrearPedidoDTO)
+        ↓
+PedidoService.actualizar()
+        ↓
+Buscar pedido
+        ↓
+Actualizar campos
+        ↓
+PedidoRepository.guardar()
+        ↓
+Mapeo Pedido → PedidoDTO
+```
+
+---
+
+## 5. Marcar pedido como entregado
 
 ```java
-Pedido pedido = obtenerPorId(id);
+@Override
+public void marcarEntregado(Long id) {
+    Pedido pedido = repositorio.buscarPorId(id)
+            .orElseThrow(() -> new RecursoNoEncontradoException("No existe el pedido con ID: " + id));
+
+    if (pedido.isEntregado()) {
+        throw new ValidacionException("El pedido con ID " + id + " ya había sido marcado como entregado");
+    }
+
+    pedido.setEntregado(true);
+    repositorio.guardar(pedido);
+}
 ```
 
-Esto también permite comprobar que el pedido exista.
+Pasos:
 
-Después se modifica su estado:
-
-```java
-pedido.setEntregado(true);
-```
-
-Finalmente se guarda nuevamente:
-
-```java
-repositorio.guardar(pedido);
-```
-
-### Endpoint relacionado
+1. Busca el pedido (si no existe → `RecursoNoEncontradoException`).
+2. **Nueva regla de negocio:** si ya estaba entregado, lanza `ValidacionException`.
+3. Cambia `entregado` a `true` y guarda.
 
 ```http
 PUT /api/pedidos/{id}/entregar
 ```
-
-### Flujo
 
 ```text
 PUT /api/pedidos/1/entregar
         ↓
 PedidoController
         ↓
-PedidoService
+PedidoService.marcarEntregado()
         ↓
 Buscar pedido
         ↓
-Cambiar entregado = true
+¿Ya entregado? → sí: ValidacionException
+        ↓ no
+entregado = true
         ↓
 Guardar pedido
 ```
 
 ---
 
-# 5. Eliminar pedido
-
-### Método
+## 6. Eliminar pedido
 
 ```java
-void eliminar(Long id)
+@Override
+public void eliminar(Long id) {
+    if (!repositorio.existePorId(id)) {
+        throw new RecursoNoEncontradoException("No existe el pedido con ID: " + id);
+    }
+    repositorio.eliminar(id);
+}
 ```
 
-### Función
+Ahora la existencia se comprueba con `repositorio.existePorId(id)` en lugar de cargar el pedido completo. Si no existe se lanza `RecursoNoEncontradoException`; si existe se elimina.
 
-Elimina un pedido existente.
-
-Antes de eliminarlo se comprueba que exista:
-
-```java
-obtenerPorId(id);
-```
-
-Después se solicita al repositorio que lo elimine:
-
-```java
-repositorio.eliminar(id);
-```
-
-### Flujo
+> Esto requiere que `PedidoRepository` tenga el método `existePorId(Long id)`.
 
 ```text
 DELETE /api/pedidos/1
         ↓
 PedidoController
         ↓
-PedidoService
+PedidoService.eliminar()
         ↓
-Comprobar existencia
+PedidoRepository.existePorId()
         ↓
-PedidoRepository
-        ↓
-Pedido eliminado
+PedidoRepository.eliminar()
 ```
 
 ---
 
 # Manejo de Validaciones
 
-Las validaciones pertenecen a la capa de servicio porque representan reglas de negocio.
+Las validaciones ahora se reparten en dos niveles:
 
-Por ejemplo:
+**1. Validaciones de formato (en el DTO).** Verifican que los datos sean válidos antes de entrar al servicio:
 
-```java
-if (precio <= 0) {
-    throw new IllegalArgumentException(
-        "El precio debe ser mayor a 0"
-    );
-}
-```
+- `cliente`: no vacío, máximo 25 caracteres.
+- `plato`: no vacío, máximo 50 caracteres.
+- `precio`: no nulo y positivo.
 
-El servicio no se encarga de decidir directamente qué código HTTP devolver.
+Si fallan, Spring lanza `MethodArgumentNotValidException` antes de ejecutar el servicio y el `GlobalExceptionHandler` responde `400 Bad Request` con un mapa `campo → mensaje`.
 
-En su lugar, lanza la excepción y el controlador la transforma en:
+**2. Reglas de negocio (en el servicio).** Dependen del estado del sistema:
 
-```http
-400 Bad Request
-```
-
-Esto mantiene separadas las responsabilidades.
+- El pedido debe existir → `RecursoNoEncontradoException`.
+- Un pedido no puede marcarse como entregado dos veces → `ValidacionException`.
+- El DTO de creación no puede ser `null` → `ValidacionException`.
 
 ---
 
@@ -370,50 +520,40 @@ Esto mantiene separadas las responsabilidades.
 La capa de servicio se encarga de:
 
 * Aplicar las reglas de negocio.
-* Validar los datos recibidos.
-* Crear pedidos.
-* Consultar pedidos.
-* Buscar pedidos por ID.
+* Crear, consultar, actualizar y eliminar pedidos.
 * Cambiar el estado de entrega.
-* Solicitar la eliminación de pedidos.
+* Convertir entre la entidad `Pedido` y los DTOs.
+* Lanzar excepciones propias cuando algo falla.
 * Comunicarse con el repositorio.
 
-La capa de servicio **no se encarga de manejar directamente las peticiones HTTP**.
+La capa de servicio **no** se encarga de:
 
-Por ejemplo, el servicio no utiliza:
-
-```java
-@GetMapping
-@PostMapping
-@PutMapping
-@DeleteMapping
-```
-
-Estas responsabilidades pertenecen al controlador.
+* Manejar peticiones HTTP (`@GetMapping`, `@PostMapping`, `@PutMapping`, `@DeleteMapping` pertenecen al controlador).
+* Decidir los códigos de estado HTTP.
+* Validar el formato de los datos de entrada (eso lo hace el DTO).
 
 ---
 
 # Principio de Separación de Responsabilidades
-
-FoodExpress separa las responsabilidades de cada capa:
 
 ```text
 ┌─────────────────────────────┐
 │       CONTROLADOR           │
 │                             │
 │ Recibe peticiones HTTP      │
+│ Activa validación (@Valid)  │
 │ Devuelve respuestas HTTP    │
 └──────────────┬──────────────┘
-               │
+               │  DTOs
                ↓
 ┌─────────────────────────────┐
 │          SERVICIO           │
 │                             │
-│ Lógica de negocio           │
-│ Validaciones                │
-│ Operaciones sobre pedidos   │
+│ Reglas de negocio           │
+│ Mapeo Pedido ↔ DTO          │
+│ Excepciones propias         │
 └──────────────┬──────────────┘
-               │
+               │  Entidad Pedido
                ↓
 ┌─────────────────────────────┐
 │        REPOSITORIO          │
@@ -422,18 +562,20 @@ FoodExpress separa las responsabilidades de cada capa:
 └─────────────────────────────┘
 ```
 
-Esta separación permite que cada componente tenga una responsabilidad concreta y facilita la comprensión y mantenimiento del proyecto.
-
 ---
 
-# Resumen
+# Resumen de cambios respecto a la versión anterior
 
-`PedidoService` define las operaciones disponibles para gestionar pedidos, mientras que `PedidoServiceImpl` contiene la lógica necesaria para ejecutarlas.
-
-La capa de servicio funciona como el punto intermedio entre el controlador y el repositorio:
+| Aspecto | Antes | Ahora |
+|---------|-------|-------|
+| Tipos de entrada/salida | `Pedido` y parámetros sueltos | `CrearPedidoDTO` / `PedidoDTO` |
+| Validación de cliente, plato y precio | En el servicio con `if` | En el DTO con Bean Validation |
+| Excepciones | `NoSuchElementException`, `IllegalArgumentException` | `RecursoNoEncontradoException`, `ValidacionException` |
+| Actualizar pedido | No existía | `actualizar(Long, CrearPedidoDTO)` |
+| Marcar entregado | Sin restricción | No permite marcar dos veces |
+| Eliminar | Llamaba a `obtenerPorId` | Usa `existePorId` |
+| Limpieza de espacios (`trim`) | Se aplicaba en el servicio | Ya no se aplica |
 
 ```text
 Controller → Service → Repository
 ```
-
-De esta manera, el controlador no necesita conocer cómo se almacenan los pedidos y el repositorio no necesita conocer cómo se reciben las peticiones HTTP.
